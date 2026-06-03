@@ -43,6 +43,7 @@ html, body, #root { margin: 0; height: 100%; background: var(--bg); color: var(-
 .map-area { grid-area: map; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .sidebar  { grid-area: side; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
 .bottom   { grid-area: bottom; overflow: auto; }
+.full { flex: 1; min-height: 0; margin: 8px; overflow: auto; }
 
 .leaflet-container { height: 100%; width: 100%; background: var(--bg); }
 

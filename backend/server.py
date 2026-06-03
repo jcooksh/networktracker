@@ -54,20 +54,21 @@ def resolve_home():
     return {"lat": h.get("lat", 0), "lng": h.get("lng", 0),
             "city": "", "country": "", "ip": ""}
 
-# Bundled city coords for demo mode (no MaxMind DB needed).
-DEMO_CITIES = [
-    (37.751, -97.822, "Ashburn", "US"),
-    (52.3676, 4.9041, "Amsterdam", "NL"),
-    (1.3521, 103.8198, "Singapore", "SG"),
-    (35.6762, 139.6503, "Tokyo", "JP"),
-    (-33.8688, 151.2093, "Sydney", "AU"),
-    (51.5074, -0.1278, "London", "GB"),
-    (50.1109, 8.6821, "Frankfurt", "DE"),
-    (-23.5505, -46.6333, "Sao Paulo", "BR"),
-    (19.0760, 72.8777, "Mumbai", "IN"),
-    (37.4419, -122.1430, "Palo Alto", "US"),
-    (47.6062, -122.3321, "Seattle", "US"),
-    (48.8566, 2.3522, "Paris", "FR"),
+# Bundled demo destinations (no MaxMind DB needed). Stable IP per endpoint so
+# nodes accumulate instead of scattering. ip, host, lat, lng, city, country.
+DEMO_DESTS = [
+    ("151.101.1.140", "fastly-cdn", 37.751, -97.822, "Ashburn", "US"),
+    ("142.250.72.110", "google", 37.4419, -122.1430, "Mountain View", "US"),
+    ("13.107.42.14", "microsoft", 47.6062, -122.3321, "Seattle", "US"),
+    ("104.244.42.65", "twitter", 35.6762, 139.6503, "Tokyo", "JP"),
+    ("157.240.22.35", "facebook", 52.3676, 4.9041, "Amsterdam", "NL"),
+    ("99.84.0.10", "cloudfront", 1.3521, 103.8198, "Singapore", "SG"),
+    ("18.165.83.20", "aws", -33.8688, 151.2093, "Sydney", "AU"),
+    ("140.82.121.4", "github", 50.1109, 8.6821, "Frankfurt", "DE"),
+    ("8.8.8.8", "dns-google", 19.0760, 72.8777, "Mumbai", "IN"),
+    ("1.1.1.1", "dns-cloudflare", 48.8566, 2.3522, "Paris", "FR"),
+    ("23.45.0.50", "akamai", -23.5505, -46.6333, "Sao Paulo", "BR"),
+    ("185.199.108.0", "cdn", 51.5074, -0.1278, "London", "GB"),
 ]
 DEMO_PROTOS = [("TCP", "443"), ("TCP", "80"), ("UDP", "443"), ("TCP", "853"), ("UDP", "53")]
 
@@ -187,30 +188,40 @@ async def run_tshark():
     await pump(proc.stdout)
 
 
+DEMO_DEVICES = {
+    "192.168.1.42": "jake-laptop",
+    "192.168.1.10": "nas",
+    "192.168.1.20": "living-room-tv",
+    "192.168.1.55": "jake-iphone",
+    "192.168.1.56": "sarah-iphone",
+    "192.168.1.70": "echo-dot",
+    "192.168.1.71": "nest-thermostat",
+    "192.168.1.72": "ring-doorbell",
+    "192.168.1.80": "ps5",
+    "192.168.1.90": "work-macbook",
+}
+
+
 async def run_demo():
     """Emit synthetic flows so the map populates without tshark or a GeoIP DB."""
-    devices = CONFIG.get("devices") or {
-        "192.168.1.42": "jake-laptop",
-        "192.168.1.10": "nas",
-        "192.168.1.20": "tv",
-        "192.168.1.55": "phone",
-    }
+    devices = DEMO_DEVICES   # demo is synthetic; ignore real config device map
     src_ips = list(devices.keys())
     print("DEMO MODE: emitting synthetic flows", file=sys.stderr)
     while True:
         src = random.choice(src_ips)
-        lat, lng, city, country = random.choice(DEMO_CITIES)
+        ip, host, lat, lng, city, country = random.choice(DEMO_DESTS)
         proto, dport = random.choice(DEMO_PROTOS)
         event = {
             "type": "flow",
             "ts": time.time(),
             "src_ip": src,
             "device": devices[src],
-            "dst_ip": f"203.0.113.{random.randint(1, 254)}",
+            "dst_ip": ip,
+            "dst_host": host,
             "proto": proto,
             "dport": dport,
-            "lat": lat + random.uniform(-1, 1),
-            "lng": lng + random.uniform(-1, 1),
+            "lat": lat,
+            "lng": lng,
             "city": city,
             "country": country,
         }
