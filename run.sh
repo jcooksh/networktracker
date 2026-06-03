@@ -11,7 +11,10 @@ cd "$ROOT/backend"
 if [ ! -d .venv ]; then python3 -m venv .venv; fi
 ./.venv/bin/pip install -q -r requirements.txt
 
-if [ "$MODE" = "real" ]; then
+if [ "$MODE" = "pihole" ]; then
+  # whole-house DNS destinations from Pi-hole (config.json -> pihole.api)
+  ./.venv/bin/python server.py --config config.json --pihole &
+elif [ "$MODE" = "real" ]; then
   # macOS: if you're in the access_bpf group (Wireshark ChmodBPF), no sudo needed.
   # Otherwise prefix with sudo. Linux: add sudo or set cap_net_raw on dumpcap.
   ./.venv/bin/python server.py --config config.json &

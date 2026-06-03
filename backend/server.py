@@ -327,7 +327,83 @@ async def pihole_device_names(ssh, db):
     return names
 
 
+# Pi-hole v5 query status codes that mean the lookup was answered (left the house).
+# Everything else (blocked by gravity/blacklist/regex) never went out.
+PIHOLE_ANSWERED = {"2", "3", "12", "13", "14", "16"}
+
+
 async def run_pihole():
+    """Dispatch to the Pi-hole HTTP API reader (if configured) or the FTL DB reader."""
+    if CONFIG.get("pihole", {}).get("api"):
+        return await run_pihole_api()
+    return await run_pihole_db()
+
+
+async def run_pihole_api():
+    """Stream Pi-hole DNS queries via the v5 HTTP API (getAllQueries).
+
+    Polls the API, resolves each queried domain -> IP -> geo, emits a flow.
+    Read-only HTTP polling: zero impact on the network.
+    """
+    p = CONFIG["pihole"]
+    api = p["api"].rstrip("/")
+    token = p.get("token", "")
+    poll = int(p.get("poll_sec", 2))
+    batch = int(p.get("batch", 200))
+    client_name = p.get("client_name", "home-network")
+    names = CONFIG.get("devices", {})
+    print(f"PIHOLE MODE: polling {api} every {poll}s (aggregate; "
+          f"Nest Wifi hides per-device)", file=sys.stderr)
+
+    def _fetch():
+        url = f"{api}?getAllQueries={batch}"
+        if token:
+            url += f"&auth={token}"
+        with urllib.request.urlopen(url, timeout=8) as r:
+            return json.loads(r.read().decode()).get("data", [])
+
+    last_ts = 0.0
+    seen = set()                       # row signatures at the boundary second
+    loop = asyncio.get_running_loop()
+    while True:
+        await asyncio.sleep(poll)
+        try:
+            data = await loop.run_in_executor(None, _fetch)
+        except Exception as e:
+            print(f"pihole api error: {e}", file=sys.stderr)
+            continue
+        # API returns newest-first; process chronologically
+        for row in reversed(data):
+            ts = float(row[0]); domain = row[2]; client = row[3]; status = str(row[4])
+            sig = f"{row[0]}|{domain}|{row[1]}|{client}"
+            if ts < last_ts or sig in seen:
+                continue
+            if ts > last_ts:
+                last_ts = ts; seen.clear()
+            seen.add(sig)
+            if status not in PIHOLE_ANSWERED:
+                continue
+            ip = await resolve_domain(domain)
+            if not ip:
+                continue
+            geo = await geo_resolve(ip)
+            if geo is None:
+                continue
+            lat, lng, city, country, _ = geo
+            await broadcast({
+                "type": "flow",
+                "ts": ts,
+                "src_ip": client,
+                "device": names.get(client, client_name),
+                "dst_ip": ip,
+                "dst_host": domain,
+                "proto": "DNS",
+                "dport": "",
+                "lat": lat, "lng": lng, "city": city, "country": country,
+            })
+
+
+async def run_pihole_db():
     """Stream Pi-hole DNS queries (all devices) from the FTL database.
 
     Each query = one device (client) reaching out to a domain. We resolve the
