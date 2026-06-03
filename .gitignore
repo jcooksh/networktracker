@@ -1,0 +1,17 @@
+# GeoIP database (license: do not redistribute)
+*.mmdb
+
+# backend
+backend/config.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# frontend
+node_modules/
+dist/
+.vite/
+
+# os
+.DS_Store

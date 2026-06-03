@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>networktracker</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+      html, body, #root { margin: 0; height: 100%; background: #0b0f17; }
+      .leaflet-container { background: #0b0f17; }
+      .pulse { animation: pulse 1.4s ease-out infinite; transform-origin: center; }
+      @keyframes pulse {
+        0%   { opacity: 1;   stroke-width: 1; }
+        100% { opacity: 0.2; stroke-width: 10; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
