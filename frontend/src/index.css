@@ -45,6 +45,39 @@ html, body, #root { margin: 0; height: 100%; background: var(--bg); color: var(-
 .bottom   { grid-area: bottom; overflow: auto; }
 .full { flex: 1; min-height: 0; margin: 8px; overflow: auto; }
 
+.map-area { position: relative; }
+.map-filter {
+  position: absolute; top: 10px; left: 10px; z-index: 1000;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 8px; font-size: 12px; color: var(--muted);
+}
+.map-filter select {
+  background: var(--panel2); color: var(--accent); border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 6px; font-family: inherit; font-size: 12px;
+}
+
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: var(--panel2); color: var(--text); }
+
+.detail-head { display: flex; align-items: center; gap: 12px; padding: 4px 4px 10px; }
+.detail-head h2 { margin: 0; font-size: 18px; color: var(--accent); }
+.back {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 5px 10px; cursor: pointer; font-family: inherit; font-size: 12px;
+}
+.back:hover { color: var(--accent); }
+
+.kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin: 0 4px 4px; }
+.kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.kpi .v { font-size: 24px; font-weight: 700; color: var(--text); }
+.kpi .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+
+.detail-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 4px;
+}
+.detail-grid .span2 { grid-column: 1 / span 2; }
+@media (max-width: 1100px) { .kpi-row { grid-template-columns: repeat(3, 1fr); } }
+
 .leaflet-container { height: 100%; width: 100%; background: var(--bg); }
 
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
