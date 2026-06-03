@@ -261,6 +261,126 @@ async def run_demo():
         await asyncio.sleep(random.uniform(0.3, 1.2))
 
 
+DOMAIN_CACHE = {}     # domain -> resolved ip
+
+
+async def resolve_domain(domain):
+    """Resolve a domain to one IP (cached). Returns ip str or None."""
+    if not domain:
+        return None
+    if domain in DOMAIN_CACHE:
+        return DOMAIN_CACHE[domain]
+    def _r():
+        try:
+            return socket.getaddrinfo(domain, None, proto=socket.IPPROTO_TCP)[0][4][0]
+        except Exception:
+            return None
+    ip = await asyncio.get_running_loop().run_in_executor(None, _r)
+    DOMAIN_CACHE[domain] = ip
+    return ip
+
+
+def _pihole_cfg():
+    p = CONFIG.get("pihole", {})
+    return (p.get("ssh"),                                   # "pi@192.168.x" or None=local
+            p.get("db", "/etc/pihole/pihole-FTL.db"),
+            int(p.get("poll_sec", 2)))
+
+
+def _sqlite_cmd(ssh, db, sql):
+    """Build argv that runs a read-only sqlite query, locally or over ssh."""
+    # immutable=1 opens the live FTL DB read-only without locking it.
+    uri = f"file:{db}?immutable=1"
+    inner = ["sqlite3", "-readonly", "-separator", "\x1f", uri, sql]
+    if ssh:
+        return ["ssh", "-o", "BatchMode=yes", ssh, " ".join(
+            ["sqlite3", "-readonly", "-separator", "'\x1f'", f"'{uri}'", f'"{sql}"'])]
+    return inner
+
+
+async def _sqlite_query(ssh, db, sql):
+    proc = await asyncio.create_subprocess_exec(
+        *_sqlite_cmd(ssh, db, sql),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    out, err = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(err.decode().strip() or "sqlite query failed")
+    rows = []
+    for line in out.decode("utf-8", "replace").splitlines():
+        if line:
+            rows.append(line.split("\x1f"))
+    return rows
+
+
+async def pihole_device_names(ssh, db):
+    """Map client IP -> friendly name from Pi-hole's network tables + config."""
+    names = dict(CONFIG.get("devices", {}))
+    try:
+        rows = await _sqlite_query(ssh, db,
+            "SELECT na.ip, COALESCE(NULLIF(n.name,''), na.name) "
+            "FROM network_addresses na LEFT JOIN network n ON na.network_id = n.id;")
+        for ip, name in rows:
+            if name and ip not in names:
+                names[ip] = name
+    except Exception as e:
+        print(f"pihole name map unavailable: {e}", file=sys.stderr)
+    return names
+
+
+async def run_pihole():
+    """Stream Pi-hole DNS queries (all devices) from the FTL database.
+
+    Each query = one device (client) reaching out to a domain. We resolve the
+    domain to an IP, geolocate it, and emit a flow. Passive read-only DB access,
+    so it adds no load to the network.
+    """
+    ssh, db, poll = _pihole_cfg()
+    where = f"on {ssh}" if ssh else "locally"
+    print(f"PIHOLE MODE: reading {db} {where} every {poll}s", file=sys.stderr)
+
+    names = await pihole_device_names(ssh, db)
+    # start at the newest query id so we stream live (skip history)
+    try:
+        cur = await _sqlite_query(ssh, db, "SELECT MAX(id) FROM queries;")
+        last_id = int(cur[0][0]) if cur and cur[0][0] else 0
+    except Exception as e:
+        sys.exit(f"cannot read Pi-hole DB: {e}")
+
+    refresh = 0
+    while True:
+        await asyncio.sleep(poll)
+        try:
+            rows = await _sqlite_query(ssh, db,
+                "SELECT id, timestamp, client, domain FROM queries "
+                f"WHERE id > {last_id} ORDER BY id LIMIT 500;")
+        except Exception as e:
+            print(f"pihole poll error: {e}", file=sys.stderr)
+            continue
+        refresh += 1
+        if refresh % 30 == 0:                      # refresh device names periodically
+            names = await pihole_device_names(ssh, db)
+        for rid, ts, client, domain in rows:
+            last_id = int(rid)
+            ip = await resolve_domain(domain)
+            if not ip:
+                continue
+            geo = await geo_resolve(ip)
+            if geo is None:
+                continue
+            lat, lng, city, country, _ = geo
+            await broadcast({
+                "type": "flow",
+                "ts": float(ts),
+                "src_ip": client,
+                "device": names.get(client, client),
+                "dst_ip": ip,
+                "dst_host": domain,
+                "proto": "DNS",
+                "dport": "",
+                "lat": lat, "lng": lng, "city": city, "country": country,
+            })
+
+
 async def run_stdin():
     """Read the packet stream piped into stdin (capture node over ssh)."""
     loop = asyncio.get_running_loop()
@@ -278,6 +398,8 @@ async def main():
                     help="read packet stream from stdin instead of launching tshark")
     ap.add_argument("--demo", action="store_true",
                     help="emit synthetic flows (no tshark/GeoIP DB needed)")
+    ap.add_argument("--pihole", action="store_true",
+                    help="read all-device DNS queries from a Pi-hole FTL database")
     args = ap.parse_args()
 
     load_config(args.config)
@@ -302,6 +424,8 @@ async def main():
         print(f"WebSocket up on ws://{host}:{port}", file=sys.stderr)
         if args.demo:
             source = run_demo()
+        elif args.pihole:
+            source = run_pihole()
         elif args.stdin:
             source = run_stdin()
         else:
