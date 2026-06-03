@@ -14,12 +14,31 @@ Self-hosted network monitor. Visualizes outbound traffic from every device on yo
 | Backend | Python: asyncio, geoip2, websockets | `backend/` |
 | Frontend | React + Leaflet + react-leaflet | `frontend/` |
 
-## Quick start
+## Quick start (one command, demo mode)
+
+No setup, no GeoIP DB, no `sudo`. Synthetic flows so you can see the map immediately:
+
+```bash
+./run.sh
+```
+Opens backend on `ws://localhost:8765` + frontend on http://localhost:5173.
+
+## Real capture mode
 
 1. **GeoIP DB** — register free at [MaxMind](https://www.maxmind.com/en/geolite2/signup), download `GeoLite2-City.mmdb`, drop in `backend/`.
-2. **Capture** — run capture script on Pi/router (see `capture/README.md`).
-3. **Backend** — `cd backend && pip install -r requirements.txt && python server.py`.
-4. **Frontend** — `cd frontend && npm install && npm run dev`, open http://localhost:5173.
+2. `cp backend/config.example.json backend/config.json`, set `iface`, `home` coords, device map.
+3. **Capture** — run on Pi/router (see `capture/README.md`), or let backend launch tshark locally.
+4. Run:
+   ```bash
+   ./run.sh real      # backend launches tshark (needs sudo) + frontend
+   ```
+
+### Manual (instead of run.sh)
+```bash
+cd backend && python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+./.venv/bin/python server.py --demo          # or --config config.json for real
+cd ../frontend && npm install && npm run dev
+```
 
 ## Architecture notes
 

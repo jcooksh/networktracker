@@ -13,22 +13,50 @@ import argparse
 import asyncio
 import ipaddress
 import json
+import random
 import sys
 import time
 from pathlib import Path
 
-import geoip2.database
 import websockets
 
+try:
+    import geoip2.database
+    import geoip2.errors
+except ImportError:
+    geoip2 = None     # only needed for real capture mode
+
 CONFIG = {}
-GEO = None            # geoip2 Reader
+GEO = None            # geoip2 Reader (None in demo mode)
 CLIENTS = set()       # connected websockets
 DEDUP = {}            # (src,dst,proto) -> last_seen_epoch
+
+# Bundled city coords for demo mode (no MaxMind DB needed).
+DEMO_CITIES = [
+    (37.751, -97.822, "Ashburn", "US"),
+    (52.3676, 4.9041, "Amsterdam", "NL"),
+    (1.3521, 103.8198, "Singapore", "SG"),
+    (35.6762, 139.6503, "Tokyo", "JP"),
+    (-33.8688, 151.2093, "Sydney", "AU"),
+    (51.5074, -0.1278, "London", "GB"),
+    (50.1109, 8.6821, "Frankfurt", "DE"),
+    (-23.5505, -46.6333, "Sao Paulo", "BR"),
+    (19.0760, 72.8777, "Mumbai", "IN"),
+    (37.4419, -122.1430, "Palo Alto", "US"),
+    (47.6062, -122.3321, "Seattle", "US"),
+    (48.8566, 2.3522, "Paris", "FR"),
+]
+DEMO_PROTOS = [("TCP", "443"), ("TCP", "80"), ("UDP", "443"), ("TCP", "853"), ("UDP", "53")]
 
 
 def load_config(path):
     global CONFIG
-    CONFIG = json.loads(Path(path).read_text())
+    p = Path(path)
+    if not p.exists():
+        # fall back to the example config so demo mode runs with zero setup
+        example = p.parent / "config.example.json"
+        p = example if example.exists() else p
+    CONFIG = json.loads(p.read_text()) if p.exists() else {}
 
 
 def geo_lookup(ip):
@@ -133,6 +161,36 @@ async def run_tshark():
     await pump(proc.stdout)
 
 
+async def run_demo():
+    """Emit synthetic flows so the map populates without tshark or a GeoIP DB."""
+    devices = CONFIG.get("devices") or {
+        "192.168.1.42": "jake-laptop",
+        "192.168.1.10": "nas",
+        "192.168.1.20": "tv",
+        "192.168.1.55": "phone",
+    }
+    src_ips = list(devices.keys())
+    print("DEMO MODE: emitting synthetic flows", file=sys.stderr)
+    while True:
+        src = random.choice(src_ips)
+        lat, lng, city, country = random.choice(DEMO_CITIES)
+        proto, dport = random.choice(DEMO_PROTOS)
+        event = {
+            "ts": time.time(),
+            "src_ip": src,
+            "device": devices[src],
+            "dst_ip": f"203.0.113.{random.randint(1, 254)}",
+            "proto": proto,
+            "dport": dport,
+            "lat": lat + random.uniform(-1, 1),
+            "lng": lng + random.uniform(-1, 1),
+            "city": city,
+            "country": country,
+        }
+        await broadcast(event)
+        await asyncio.sleep(random.uniform(0.3, 1.2))
+
+
 async def run_stdin():
     """Read the packet stream piped into stdin (capture node over ssh)."""
     loop = asyncio.get_running_loop()
@@ -148,16 +206,32 @@ async def main():
     ap.add_argument("--config", default="config.json")
     ap.add_argument("--stdin", action="store_true",
                     help="read packet stream from stdin instead of launching tshark")
+    ap.add_argument("--demo", action="store_true",
+                    help="emit synthetic flows (no tshark/GeoIP DB needed)")
     args = ap.parse_args()
 
     load_config(args.config)
+
     global GEO
-    GEO = geoip2.database.Reader(CONFIG["mmdb_path"])
+    if not args.demo:
+        if geoip2 is None:
+            sys.exit("geoip2 not installed; run `pip install -r requirements.txt` "
+                     "or use --demo")
+        mmdb = CONFIG.get("mmdb_path", "GeoLite2-City.mmdb")
+        if not Path(mmdb).exists():
+            sys.exit(f"GeoIP DB not found at {mmdb}. Download GeoLite2-City.mmdb "
+                     f"from MaxMind, or run with --demo.")
+        GEO = geoip2.database.Reader(mmdb)
 
     host, port = CONFIG.get("ws_host", "0.0.0.0"), CONFIG.get("ws_port", 8765)
     async with websockets.serve(ws_handler, host, port):
         print(f"WebSocket up on ws://{host}:{port}", file=sys.stderr)
-        source = run_stdin() if args.stdin else run_tshark()
+        if args.demo:
+            source = run_demo()
+        elif args.stdin:
+            source = run_stdin()
+        else:
+            source = run_tshark()
         await source
 
 
