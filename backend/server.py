@@ -16,6 +16,7 @@ import json
 import random
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import websockets
@@ -30,6 +31,28 @@ CONFIG = {}
 GEO = None            # geoip2 Reader (None in demo mode)
 CLIENTS = set()       # connected websockets
 DEDUP = {}            # (src,dst,proto) -> last_seen_epoch
+HOME = None           # {"lat","lng","city","country","ip"} resolved at startup
+
+
+def resolve_home():
+    """Find this network's public IP + its coords. No API key needed.
+
+    Tries ip-api.com (returns IP + geo in one call). Falls back to config.home.
+    """
+    try:
+        with urllib.request.urlopen("http://ip-api.com/json/", timeout=5) as r:
+            d = json.loads(r.read().decode())
+        if d.get("status") == "success":
+            return {
+                "lat": d["lat"], "lng": d["lon"],
+                "city": d.get("city", ""), "country": d.get("countryCode", ""),
+                "ip": d.get("query", ""),
+            }
+    except Exception as e:
+        print(f"home IP geolocation failed ({e}); using config.home", file=sys.stderr)
+    h = CONFIG.get("home", {"lat": 0, "lng": 0})
+    return {"lat": h.get("lat", 0), "lng": h.get("lng", 0),
+            "city": "", "country": "", "ip": ""}
 
 # Bundled city coords for demo mode (no MaxMind DB needed).
 DEMO_CITIES = [
@@ -92,6 +115,7 @@ def make_event(epoch, src, dst, proto, dport):
 
     lat, lng, city, country = geo
     return {
+        "type": "flow",
         "ts": epoch,
         "src_ip": src,
         "device": CONFIG.get("devices", {}).get(src, src),
@@ -134,6 +158,8 @@ async def broadcast(event):
 async def ws_handler(ws):
     CLIENTS.add(ws)
     try:
+        if HOME:
+            await ws.send(json.dumps({"type": "home", **HOME}))
         async for _ in ws:        # ignore client messages
             pass
     finally:
@@ -176,6 +202,7 @@ async def run_demo():
         lat, lng, city, country = random.choice(DEMO_CITIES)
         proto, dport = random.choice(DEMO_PROTOS)
         event = {
+            "type": "flow",
             "ts": time.time(),
             "src_ip": src,
             "device": devices[src],
@@ -222,6 +249,11 @@ async def main():
             sys.exit(f"GeoIP DB not found at {mmdb}. Download GeoLite2-City.mmdb "
                      f"from MaxMind, or run with --demo.")
         GEO = geoip2.database.Reader(mmdb)
+
+    global HOME
+    HOME = await asyncio.get_running_loop().run_in_executor(None, resolve_home)
+    print(f"home: {HOME['city']} {HOME['country']} ({HOME['ip']}) "
+          f"@ {HOME['lat']},{HOME['lng']}", file=sys.stderr)
 
     host, port = CONFIG.get("ws_host", "0.0.0.0"), CONFIG.get("ws_port", 8765)
     async with websockets.serve(ws_handler, host, port):
