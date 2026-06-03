@@ -14,6 +14,7 @@ import asyncio
 import ipaddress
 import json
 import random
+import socket
 import sys
 import time
 import urllib.request
@@ -83,44 +84,72 @@ def load_config(path):
     CONFIG = json.loads(p.read_text()) if p.exists() else {}
 
 
-def geo_lookup(ip):
-    """Return (lat, lng, city, country) or None for private/unknown IPs."""
+GEO_CACHE = {}        # dst_ip -> (lat,lng,city,country,host) or None
+
+
+def _geo_blocking(ip):
+    """Resolve coords + hostname for one IP. mmdb if loaded, else ip-api.com."""
+    host = ""
+    try:
+        host = socket.gethostbyaddr(ip)[0]
+    except Exception:
+        pass
+    if GEO is not None:
+        try:
+            r = GEO.city(ip)
+            if r.location.latitude is None:
+                return None
+            return (r.location.latitude, r.location.longitude,
+                    r.city.name or "", r.country.iso_code or "", host)
+        except Exception:
+            return None
+    # no local DB: free ip-api lookup (cached per IP, so repeats are free)
+    try:
+        url = f"http://ip-api.com/json/{ip}?fields=status,lat,lon,city,countryCode"
+        with urllib.request.urlopen(url, timeout=4) as resp:
+            d = json.loads(resp.read().decode())
+        if d.get("status") == "success":
+            return (d["lat"], d["lon"], d.get("city", ""),
+                    d.get("countryCode", ""), host)
+    except Exception:
+        pass
+    return None
+
+
+async def geo_resolve(ip):
+    """Cached async geolocation. Returns (lat,lng,city,country,host) or None."""
     try:
         if ipaddress.ip_address(ip).is_private:
             return None
     except ValueError:
         return None
-    try:
-        r = GEO.city(ip)
-        if r.location.latitude is None:
-            return None
-        return (r.location.latitude, r.location.longitude,
-                r.city.name or "", r.country.iso_code or "")
-    except geoip2.errors.AddressNotFoundError:
-        return None
+    if ip in GEO_CACHE:
+        return GEO_CACHE[ip]
+    res = await asyncio.get_running_loop().run_in_executor(None, _geo_blocking, ip)
+    GEO_CACHE[ip] = res
+    return res
 
 
-def make_event(epoch, src, dst, proto, dport):
+async def build_event(epoch, src, dst, proto, dport):
     """Build a flow event dict, or None if it should be dropped/deduped."""
-    geo = geo_lookup(dst)
-    if geo is None:
-        return None
-
     key = (src, dst, proto)
-    now = epoch
     window = CONFIG.get("dedup_window_sec", 5)
     last = DEDUP.get(key)
-    if last is not None and now - last < window:
+    if last is not None and epoch - last < window:
         return None
-    DEDUP[key] = now
+    DEDUP[key] = epoch
 
-    lat, lng, city, country = geo
+    geo = await geo_resolve(dst)
+    if geo is None:
+        return None
+    lat, lng, city, country, host = geo
     return {
         "type": "flow",
         "ts": epoch,
         "src_ip": src,
         "device": CONFIG.get("devices", {}).get(src, src),
         "dst_ip": dst,
+        "dst_host": host,
         "proto": proto,
         "dport": dport,
         "lat": lat,
@@ -131,7 +160,7 @@ def make_event(epoch, src, dst, proto, dport):
 
 
 def parse_line(line):
-    """Parse one tshark CSV line -> event dict or None."""
+    """Parse one tshark CSV line -> (epoch, src, dst, proto, dport) or None."""
     parts = line.rstrip("\n").split(",")
     if len(parts) < 6:
         return None
@@ -143,7 +172,7 @@ def parse_line(line):
     except ValueError:
         epoch = time.time()
     dport = tcp_dport or udp_dport or ""
-    return make_event(epoch, src, dst, proto or "IP", dport)
+    return (epoch, src, dst, proto or "IP", dport)
 
 
 async def broadcast(event):
@@ -173,7 +202,10 @@ async def pump(stream):
         line = await stream.readline()
         if not line:
             break
-        event = parse_line(line.decode("utf-8", "replace"))
+        fields = parse_line(line.decode("utf-8", "replace"))
+        if not fields:
+            continue
+        event = await build_event(*fields)
         if event:
             await broadcast(event)
 
@@ -252,14 +284,13 @@ async def main():
 
     global GEO
     if not args.demo:
-        if geoip2 is None:
-            sys.exit("geoip2 not installed; run `pip install -r requirements.txt` "
-                     "or use --demo")
         mmdb = CONFIG.get("mmdb_path", "GeoLite2-City.mmdb")
-        if not Path(mmdb).exists():
-            sys.exit(f"GeoIP DB not found at {mmdb}. Download GeoLite2-City.mmdb "
-                     f"from MaxMind, or run with --demo.")
-        GEO = geoip2.database.Reader(mmdb)
+        if geoip2 is not None and Path(mmdb).exists():
+            GEO = geoip2.database.Reader(mmdb)
+            print(f"geolocation: local MaxMind DB ({mmdb})", file=sys.stderr)
+        else:
+            print("geolocation: ip-api.com fallback (no MaxMind DB; cached per IP)",
+                  file=sys.stderr)
 
     global HOME
     HOME = await asyncio.get_running_loop().run_in_executor(None, resolve_home)
